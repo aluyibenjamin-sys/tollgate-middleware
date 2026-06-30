@@ -1,3 +1,4 @@
 .env
 __pycache__/
 *.pyc
+tollgate_vault.db
