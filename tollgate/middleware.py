@@ -8,6 +8,8 @@ class TollgateMiddleware:
         self.app = app
         self.rpc_url = "https://mainnet.base.org"
         self.protocol_wallet = "0x48b7783904ef29888d68072beb87fb500f1eba66".lower()
+        # In-memory database to track used hashes and prevent replay fraud
+        self.used_hashes = set()
         if app is not None:
             self.init_app(app)
 
@@ -17,59 +19,57 @@ class TollgateMiddleware:
             if not getattr(app.view_functions.get(request.endpoint, {}), 'requires_payment', False):
                 return
 
-            tx_hash = request.headers.get("X-Transaction-Hash")
-            if not tx_hash:
+            # Expecting a comma-separated string of hashes from the client
+            tx_hashes_str = request.headers.get("X-Transaction-Hashes")
+            if not tx_hashes_str:
                 return self._charge_payload()
 
-            # Pass the designated merchant wallet into our fraud validator
+            tx_hashes = [h.strip() for h in tx_hashes_str.split(",") if h.strip()]
             merchant_wallet = os.getenv("MERCHANT_WALLET_ADDRESS", "").lower()
-            if not self._verify_on_chain(tx_hash, merchant_wallet):
-                return jsonify({"error": "Fraud protection: Transaction unconfirmed or invalid destinations."}), 402
 
-    def _verify_on_chain(self, tx_hash, merchant_wallet):
-        """Scans the Base blockchain logs to verify real payments reached correct destinations."""
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "eth_getTransactionReceipt",
-            "params": [tx_hash],
-            "id": 1
-        }
-        try:
-            response = requests.post(self.rpc_url, json=payload, timeout=5).json()
-            result = response.get("result")
-            
-            if not result or result.get("status") != "0x1":
-                return False  # Transaction failed or does not exist
+            if not self._verify_multi_payment(tx_hashes, merchant_wallet):
+                return jsonify({"error": "Security Block: Invalid, duplicated, or unpaid transaction links."}), 402
 
-            # Format wallets to 32-byte hex blocks to match native blockchain log topics
-            merchant_topic = "0x" + merchant_wallet.replace("0x", "").zfill(64)
-            protocol_topic = "0x" + self.protocol_wallet.replace("0x", "").zfill(64)
+    def _verify_multi_payment(self, tx_hashes, merchant_wallet):
+        """Verifies all required split transactions are valid, unique, and unpaid."""
+        paid_merchant = False
+        paid_protocol = False
 
-            paid_merchant = False
-            paid_protocol = False
+        for tx_hash in tx_hashes:
+            # 1. Replay Attack Protection
+            if tx_hash in self.used_hashes:
+                print(f"[Security Warning] Replay attack detected for hash: {tx_hash}")
+                return False
 
-            # Scan through the transaction logs to find payment destinations
-            for log in result.get("logs", []):
-                topics = log.get("topics", [])
-                if len(topics) >= 3:
-                    recipient_topic = topics[2].lower()
-                    if recipient_topic == merchant_topic:
-                        paid_merchant = True
-                    if recipient_topic == protocol_topic:
-                        paid_protocol = True
+            # Fetch transaction details from Base Network
+            payload = {"jsonrpc": "2.0", "method": "eth_getTransactionByHash", "params": [tx_hash], "id": 1}
+            try:
+                res = requests.post(self.rpc_url, json=payload, timeout=5).json()
+                tx_data = res.get("result")
+                if not tx_data:
+                    return False
 
-            # The gate only unlocks if BOTH wallets actually received money in this transaction
-            return paid_merchant and paid_protocol
+                recipient = tx_data.get("to", "").lower()
+                
+                # Check destinations
+                if recipient == merchant_wallet:
+                    paid_merchant = True
+                    self.used_hashes.add(tx_hash) # Burn the hash so it can never be used again
+                elif recipient == self.protocol_wallet:
+                    paid_protocol = True
+                    self.used_hashes.add(tx_hash)
 
-        except Exception:
-            return False
+            except Exception:
+                return False
+
+        return paid_merchant and paid_protocol
 
     def _charge_payload(self):
         merchant_wallet = os.getenv("MERCHANT_WALLET_ADDRESS", "0xMerchantMissing")
         requirements = {
             "type": "x402",
             "version": "2.0",
-            "currency": "USDC",
+            "currency": "ETH",
             "network": "eip155:8453",
             "splits": [
                 {"recipient": merchant_wallet, "weight": 99},
