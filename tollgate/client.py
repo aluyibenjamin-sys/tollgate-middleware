@@ -8,7 +8,7 @@ class TollgateClient:
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
 
     def pay_and_request(self, endpoint, private_key=None, token_address=None):
-        """Hits an endpoint. If blocked by a 402, automatically executes the on-chain payout."""
+        """Hits an endpoint. If blocked by a 402, executes all on-chain split payouts and bundles proofs."""
         url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
         
         # 1. Make the initial dry-run request
@@ -25,44 +25,49 @@ class TollgateClient:
         requirements = ast.literal_eval(requirements_str)
         splits = requirements.get("splits", [])
         
-        print("\n\033[1;33m[Web3 Engine] 402 Intercepted. Preparing Live Blockchain Payout...\033[0m")
+        print("\n\033[1;33m[Web3 Engine] 402 Intercepted. Preparing Production-Grade Multi-Hash Payout...\033[0m")
         
         # Derive account from private key safely
         account = self.w3.eth.account.from_key(private_key)
         sender_address = account.address
         
-        # 3. Build and execute payments for each split recipient
-        # Note: For production batch-splits, developers use a Splitter Smart Contract.
-        # Here we automate the direct wallet execution tracking loop.
-        last_tx_hash = None
+        # List to collect every individual transaction hash
+        collected_tx_hashes = []
+        
+        # 3. Build and execute native crypto payments for each distinct split recipient
         for split in splits:
             recipient = split["recipient"]
             weight = split["weight"]
             
-            print(f" -> Authorizing payment to {recipient} ({weight}% weight status)")
+            print(f" -> Authorizing split payment to {recipient} ({weight}% weight allocation)")
             
-            # Build standard transaction structure
+            # Fetch fresh nonce for each independent transaction block
             tx = {
                 'nonce': self.w3.eth.get_transaction_count(sender_address),
                 'to': self.w3.to_checksum_address(recipient),
-                'value': self.w3.to_wei(0.0001 * (weight / 100), 'ether'), # Example split scaling
+                'value': self.w3.to_wei(0.0001 * (weight / 100), 'ether'),
                 'gas': 21000,
                 'maxFeePerGas': self.w3.eth.gas_price,
                 'maxPriorityFeePerGas': self.w3.to_wei(0.1, 'gwei'),
-                'chainId': 8453 # Base Mainnet ID
+                'chainId': 8453
             }
             
-            # Cryptographically sign the data block locally
+            # Cryptographically sign locally
             signed_tx = self.w3.eth.account.sign_transaction(tx, private_key)
-            # Broadcast live to the Base Network
+            # Broadcast live to the network
             tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-            last_tx_hash = self.w3.to_hex(tx_hash)
             
-        print(f"\033[1;32m[Web3 Engine] Payout Broadcasted! Tx Hash: {last_tx_hash}\033[0m")
+            # Accumulate the hash signature
+            collected_tx_hashes.append(self.w3.to_hex(tx_hash))
+            
+        # Bundle all proofs neatly together using commas
+        bundled_hashes_str = ",".join(collected_tx_hashes)
+        print(f"\033[1;32m[Web3 Engine] All Split Payments Broadcasted Successfully!\033[0m")
+        print(f" -> Combined proof bundle: {bundled_hashes_str}")
         
-        # 4. Automatically retry the original request, passing the real proof of payment
-        print(" -> Retrying target endpoint with cryptographic proof header...")
-        headers = {"X-Transaction-Hash": last_tx_hash}
+        # 4. Retry original target endpoint with the complete multi-hash proof header
+        print(" -> Transmitting multi-hash token bundle to gateway verification engine...")
+        headers = {"X-Transaction-Hashes": bundled_hashes_str}
         retry_response = requests.get(url, headers=headers)
         
         return {
