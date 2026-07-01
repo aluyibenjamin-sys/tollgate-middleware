@@ -17,6 +17,8 @@ Optimized for autonomous AI agents requiring unattended programmatic payments.
 ## 🛠️ Quick Start Guide
 
 ### 1. Server-Side Guard Setup
+You can enforce payment on any route and customize the required amount per request directly in the decorator.
+
 ```python
 import os
 from flask import Flask
@@ -27,8 +29,9 @@ os.environ["MERCHANT_WALLET_ADDRESS"] = "0xYourMerchantWalletAddressHere"
 
 TollgateMiddleware(app, db_path="tollgate_vault.db")
 
+# To set a price, pass amount_usd to the decorator (e.g., 5 cents)
 @app.route("/api/v1/premium-data")
-@requires_payment
+@requires_payment(amount_usd=0.05) 
 def premium_endpoint():
     return {"status": "unlocked", "payload": "Premium data."}
 
